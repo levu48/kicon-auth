@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.log
+.env
+.env.local
+.DS_Store
+sandbox/**/node_modules/
+# Signing keys — NEVER commit private JWKs (CLAUDE.md). Provided via secret in prod.
+secrets/

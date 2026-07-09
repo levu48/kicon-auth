@@ -1,0 +1,37 @@
+# Local dev infra. NOTE: at the Phase 1 discovery milestone the app uses
+# oidc-provider's IN-MEMORY adapter and does NOT connect to these yet. They are
+# provisioned now so wiring the Redis adapter (Phase 3+) is a config change, not
+# a setup task. Bring up with:  docker compose up -d
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: kicon
+      POSTGRES_PASSWORD: kicon
+      POSTGRES_DB: kicon_idp
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kicon -d kicon_idp"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+  redisdata:

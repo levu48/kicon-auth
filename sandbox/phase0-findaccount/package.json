@@ -1,0 +1,13 @@
+{
+  "name": "phase0-findaccount-demo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Phase 0 learning sandbox: findAccount claim projection, no server/DB. Throwaway — NOT the real IdP.",
+  "scripts": {
+    "demo": "node findaccount-demo.mjs"
+  },
+  "dependencies": {
+    "jose": "^5.9.6"
+  }
+}
