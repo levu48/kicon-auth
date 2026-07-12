@@ -11,6 +11,7 @@ import { redis } from '../oidc/redis/redis-client';
 import { DEV_LOGIN_HINT, DEV_TOTP_SECRET } from '../accounts/dev-credentials';
 
 const MFA_PENDING_TTL = 300; // seconds a password-verified session waits for MFA
+const MIN_PASSWORD = 8; // minimum password length at registration
 
 /**
  * The login interaction UI. oidc-provider redirects here (see interactions.url in
@@ -272,6 +273,156 @@ export function buildInteractionsRouter(
     },
   );
 
+  // ── Registration ─────────────────────────────────────────────────────────
+  // Reached from the "Create account" link on the login page, so it lives inside
+  // the same OIDC interaction: on success we finish the interaction (log the new
+  // user in) and the flow continues back to the client — the hosted-IdP pattern.
+  // The auth origin is the only place a password may be collected (CLAUDE.md).
+
+  router.get('/interaction/:uid/register', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const details = await provider.interactionDetails(req, res);
+      if (details.prompt.name !== 'login') {
+        res.status(400).type('html').send(errorPage('Registration is only available while signing in.'));
+        return;
+      }
+      res
+        .set('cache-control', 'no-store')
+        .type('html')
+        .send(registerPage({ uid: details.uid, clientId: details.params.client_id }));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post(
+    '/interaction/:uid/register',
+    form,
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const details = await provider.interactionDetails(req, res);
+        const clientId = details.params.client_id;
+        const body = (req.body ?? {}) as {
+          email?: string;
+          name?: string;
+          password?: string;
+          confirm?: string;
+        };
+        const email = (body.email ?? '').trim().toLowerCase();
+        const name = (body.name ?? '').trim();
+
+        const reRender = (error: string, status = 400) =>
+          res
+            .status(status)
+            .set('cache-control', 'no-store')
+            .type('html')
+            .send(registerPage({ uid: details.uid, clientId, email, name, error }));
+
+        // Per-IP rate limit (reuses the login throttle's IP bucket; no email lock).
+        const decision = await throttle.check(req.ip);
+        if (!decision.allowed) {
+          audit.emit('register.blocked', {
+            outcome: 'failure',
+            ip: req.ip ?? null,
+            user_agent: req.get('user-agent') ?? null,
+            detail: { email, reason: decision.reason, retry_after: decision.retryAfter },
+          });
+          reRender(`Too many attempts. Try again in ${decision.retryAfter ?? 60}s.`, 429);
+          return;
+        }
+        await throttle.onAttempt(req.ip);
+
+        // Field validation.
+        if (!email || !/.+@.+\..+/.test(email)) return void reRender('Enter a valid email address.');
+        if (!name) return void reRender('Enter your name.');
+        if ((body.password ?? '').length < MIN_PASSWORD) {
+          return void reRender(`Password must be at least ${MIN_PASSWORD} characters.`);
+        }
+        if (body.password !== body.confirm) return void reRender('Passwords do not match.');
+
+        // Email must be unique (friendly pre-check; unique constraint is the race guard).
+        if (await accounts.findByEmail(email)) {
+          audit.emit('register.failure', {
+            outcome: 'failure',
+            ip: req.ip ?? null,
+            user_agent: req.get('user-agent') ?? null,
+            detail: { email, reason: 'email_taken' },
+          });
+          return void reRender('An account with that email already exists.');
+        }
+
+        // Breached-password check is BLOCKING at set-time (unlike the advisory check
+        // at login). k-anonymity + fail-open, so an HIBP outage never blocks signup.
+        if (await breached.isBreached(body.password ?? '')) {
+          audit.emit('register.failure', {
+            outcome: 'failure',
+            ip: req.ip ?? null,
+            user_agent: req.get('user-agent') ?? null,
+            detail: { email, reason: 'breached_password' },
+          });
+          return void reRender('That password has appeared in a known data breach. Please choose a different one.');
+        }
+
+        // Create the account.
+        let user: Awaited<ReturnType<typeof accounts.create>>;
+        try {
+          user = await accounts.create({ email, name, password: body.password ?? '' });
+        } catch (e) {
+          // Unique-violation race (two signups, same email) or DB error.
+          audit.emit('register.failure', {
+            outcome: 'failure',
+            ip: req.ip ?? null,
+            user_agent: req.get('user-agent') ?? null,
+            detail: { email, reason: 'create_failed' },
+          });
+          return void reRender('An account with that email already exists.');
+        }
+
+        audit.emit('register.success', {
+          outcome: 'success',
+          actor_sub: user.id,
+          ip: req.ip ?? null,
+          user_agent: req.get('user-agent') ?? null,
+          detail: { email, client_id: clientId },
+        });
+
+        // A brand-new account is never MFA-enrolled. If this client's tenant makes
+        // MFA mandatory (trader), we can't complete the sign-in here yet — the
+        // account exists, but enrollment (not built) is required first.
+        const tenant = tenantOf(clientId);
+        if (mfaRequired(tenant, false)) {
+          res
+            .status(403)
+            .type('html')
+            .send(
+              errorPage(
+                'Your account was created, but this application requires two-factor authentication, ' +
+                  'which is not yet set up. Enrollment is coming soon.',
+              ),
+            );
+          return;
+        }
+
+        // Otherwise sign the new user in and continue the OIDC flow.
+        audit.emit('login.success', {
+          outcome: 'success',
+          actor_sub: user.id,
+          ip: req.ip ?? null,
+          user_agent: req.get('user-agent') ?? null,
+          detail: { amr: AMR_PWD, via: 'register' },
+        });
+        await provider.interactionFinished(
+          req,
+          res,
+          { login: { accountId: user.id, amr: AMR_PWD, acr: ACR_PWD } },
+          { mergeWithLastSubmission: false },
+        );
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
   return router;
 }
 
@@ -325,9 +476,48 @@ function loginPage(opts: {
       </label>
       <button type="submit">Sign in</button>
     </form>
+    <p class="alt">No account?
+      <a href="/interaction/${encodeURIComponent(opts.uid)}/register">Create one</a>
+    </p>
     <p class="scopes">Requested scopes: ${scopes || '<em>none</em>'}</p>
     <p class="hint">Dev credentials are pre-filled. This page is served by the IdP itself —
       the crown-jewel origin. Real login adds MFA + rate limiting (Phase 4).</p>
+  `);
+}
+
+function registerPage(opts: {
+  uid: string;
+  clientId: string;
+  email?: string;
+  name?: string;
+  error?: string;
+}): string {
+  return page(`
+    <h1>Create your account</h1>
+    <p class="sub">One kicon account signs you in to <strong>${escapeHtml(opts.clientId)}</strong>
+      and every kicon app.</p>
+    ${opts.error ? `<p class="err">${escapeHtml(opts.error)}</p>` : ''}
+    <form method="post" action="/interaction/${encodeURIComponent(opts.uid)}/register" autocomplete="off">
+      <label>Name
+        <input name="name" type="text" required autofocus value="${escapeHtml(opts.name ?? '')}" />
+      </label>
+      <label>Email
+        <input name="email" type="email" required value="${escapeHtml(opts.email ?? '')}" />
+      </label>
+      <label>Password
+        <input name="password" type="password" required minlength="8"
+               autocomplete="new-password" />
+      </label>
+      <label>Confirm password
+        <input name="confirm" type="password" required minlength="8"
+               autocomplete="new-password" />
+      </label>
+      <button type="submit">Create account</button>
+    </form>
+    <p class="alt">Already have an account?
+      <a href="/interaction/${encodeURIComponent(opts.uid)}">Sign in</a>
+    </p>
+    <p class="hint">At least 8 characters. Passwords found in known data breaches are rejected.</p>
   `);
 }
 
@@ -380,6 +570,9 @@ function page(body: string): string {
       button:hover { background: #6b90ff; }
       .err { background: #3a1d22; border: 1px solid #6b2d38; color: #ffb3bd;
         padding: 8px 11px; border-radius: 8px; font-size: .85rem; }
+      .alt { margin-top: 16px; font-size: .82rem; color: #aab1c0; }
+      a { color: #6b90ff; text-decoration: none; }
+      a:hover { text-decoration: underline; }
       .scopes { margin-top: 18px; font-size: .8rem; color: #aab1c0; }
       code { background: #0f1115; border: 1px solid #2c3240; border-radius: 5px;
         padding: 1px 6px; font-size: .78rem; }

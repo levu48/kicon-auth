@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { randomBytes } from 'node:crypto';
 import * as argon2 from 'argon2';
 import { User } from '../database/entities';
 
@@ -32,5 +33,34 @@ export class AccountsService {
 
   hash(plain: string): Promise<string> {
     return argon2.hash(plain, { type: argon2.argon2id });
+  }
+
+  /** Opaque, stable `sub` for a new account. */
+  static newId(): string {
+    return 'u_' + randomBytes(8).toString('hex');
+  }
+
+  /**
+   * Create a Ring-1 account with Argon2id credentials. Email is normalised to
+   * match findByEmail. Relies on the `users.primary_email` unique constraint as
+   * the final guard against races (callers should still pre-check for a friendly
+   * message). Used by the /register flow; the admin CLI has its own DataSource path.
+   */
+  async create(input: {
+    email: string;
+    name: string;
+    password: string;
+    locale?: string | null;
+    zoneinfo?: string | null;
+  }): Promise<User> {
+    const user = this.users.create({
+      id: AccountsService.newId(),
+      primary_email: (input.email ?? '').trim().toLowerCase(),
+      name: input.name.trim(),
+      default_locale: input.locale ?? null,
+      default_zoneinfo: input.zoneinfo ?? null,
+      password_hash: await this.hash(input.password),
+    });
+    return this.users.save(user);
   }
 }
