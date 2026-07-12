@@ -7,6 +7,9 @@ const TENANT_OF: Record<string, string> = {
   banmua: 'food',
   vietcouncil: 'civic',
   xbottrader: 'trader',
+  // kicon app platform (docs/app-platform-domains.md). Its own tenant so app
+  // users never receive food/civic/trader claims and vice-versa.
+  vote: 'apps',
 };
 
 export function tenantOf(clientId: string | undefined): string {

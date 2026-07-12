@@ -68,4 +68,25 @@ export const clients: ClientMetadata[] = [
     default_max_age: 0,
     default_acr_values: [ACR_MFA],
   },
+  {
+    // First app of the kicon app platform (see docs/app-platform-domains.md).
+    // A microfrontend served from its OWN origin (vote.kicon.com) and embedded
+    // into partner sites (e.g. vietcouncil.org) via an iframe. Because an embedded
+    // cross-site app cannot silently reuse the auth cookie (third-party cookies),
+    // it authenticates via a top-level/popup redirect — a normal public+PKCE
+    // client. Standard assurance; app-specific authz (who may vote) lives at the
+    // vote resource server (api.kicon.com), not in IdP scopes.
+    client_id: 'vote',
+    client_name: 'Kicon Vote — app platform (public SPA + PKCE, embeddable)',
+    token_endpoint_auth_method: 'none', // public client; PKCE is its only proof
+    grant_types: ['authorization_code', 'refresh_token'],
+    response_types: ['code'],
+    redirect_uris: [
+      'http://localhost:8084/auth/callback',
+      'https://vote.kicon.com/auth/callback', // TODO confirm
+    ],
+    scope: 'openid profile email offline_access',
+    id_token_signed_response_alg: 'ES256',
+    default_acr_values: [ACR_PWD],
+  },
 ];
