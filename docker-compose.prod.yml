@@ -1,0 +1,49 @@
+# Production topology (CLAUDE.md): nginx (TLS) in front of TWO app instances, so a
+# reboot/deploy of one instance never takes the login path fully down.
+#
+# Postgres and Redis are MANAGED and EXTERNAL (DigitalOcean Managed DB / Redis) —
+# they are NOT in this compose. The app connects via DATABASE_URL / REDIS_URL in
+# .env.prod. See docs/data-ownership.md (crown-jewel isolation) and docs/deployment.md.
+
+name: kicon-idp
+
+x-app: &app-base
+  image: kicon-idp:latest
+  env_file: [.env.prod]
+  restart: always
+  # Signing keystore mounted read-only from a host file created on the droplet
+  # (never baked into the image, never committed). JWKS_PATH points here.
+  volumes:
+    - ./secrets:/app/secrets:ro
+  expose: ["3000"]
+
+services:
+  app1:
+    <<: *app-base
+    build: { context: ., dockerfile: Dockerfile }
+
+  app2:
+    <<: *app-base
+    depends_on: [app1] # reuse the image app1 builds
+
+  # One-shot migration runner:  docker compose -f docker-compose.prod.yml run --rm migrate
+  migrate:
+    <<: *app-base
+    restart: "no"
+    command: ["npx", "typeorm", "migration:run", "-d", "dist/database/data-source.js"]
+    profiles: ["tools"]
+
+  nginx:
+    image: nginx:1.27
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro # Let's Encrypt certs (certbot on host)
+      - certbot-www:/var/www/certbot # ACME http-01 challenge webroot
+    depends_on: [app1, app2]
+
+volumes:
+  certbot-www:

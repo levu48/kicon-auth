@@ -4,13 +4,16 @@ OpenID Connect identity provider for the kicon platforms. NestJS + `oidc-provide
 (panva). Architecture and settled decisions live in [`CLAUDE.md`](CLAUDE.md);
 the learning material is in [`docs/phase-0-study-notes.md`](docs/phase-0-study-notes.md).
 
-**Current state: Phase 4 complete.** Everything from Phase 3 (Redis + Postgres),
-plus the full security layer: persistent ES256 **signing keystore** with `kid`
-rotation; append-only **audit log**; **TOTP MFA** tiered by tenant (trader
-mandatory, civic once enrolled, food none); **cross-tenant SSO gating** (food
-seamless; civic/trader forced re-auth + MFA, `acr` loa1/loa2 in the id_token); and
-**login hardening** — per-IP rate limiting, account lockout, and a HIBP
-k-anonymity breached-password check. Next: **Phase 5** (droplet deploy).
+**Current state: Phases 1–4 complete; Phase 5 deploy artifacts ready.** The full
+IdP runs locally on real Postgres + Redis with the complete security layer
+(signing keystore + `kid` rotation, audit log, TOTP MFA, cross-tenant SSO gating,
+login hardening). **Phase 5** deployment artifacts — [`Dockerfile`](Dockerfile),
+[`docker-compose.prod.yml`](docker-compose.prod.yml),
+[`deploy/nginx/nginx.conf`](deploy/nginx/nginx.conf),
+[`.env.prod.example`](.env.prod.example) — and the droplet runbook
+([`docs/deployment.md`](docs/deployment.md)) are done and the app is verified in
+production mode; the actual droplet provisioning is executed from that runbook when
+ready, gated by [`docs/banmua-integration.md`](docs/banmua-integration.md).
 
 ---
 
@@ -149,6 +152,7 @@ src/
 | MFA (TOTP), tenant-tiered | ✅ trader mandatory, civic if enrolled, food none |
 | Cross-tenant SSO gating + `acr` | ✅ food seamless; civic/trader forced re-auth + MFA |
 | Rate limit / lockout / breached-password | ✅ Redis throttle + lockout, HIBP k-anonymity |
-| Two instances behind nginx, backups | ⬜ Phase 5 (droplet) |
+| Prod artifacts (Docker, nginx, runbook) | ✅ built + prod-mode verified; deploy runbook ready |
+| Live droplet deploy + banmua cutover | ⬜ execute `docs/deployment.md` on the droplet |
 | Real key management + rotation script | ⬜ Phase 4 |
 | Two instances behind nginx, backups | ⬜ Phase 5 (droplet) |

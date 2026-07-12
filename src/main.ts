@@ -1,7 +1,9 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
+import { DataSource } from 'typeorm';
 import type { Express } from 'express';
+import { redis } from './oidc/redis/redis-client';
 import { AppModule } from './app.module';
 import { OidcService } from './oidc/oidc.service';
 import { AccountsService } from './accounts/accounts.service';
@@ -16,6 +18,7 @@ async function bootstrap() {
   // bodyParser:false — oidc-provider parses request bodies itself (e.g. /token).
   // Letting Nest's global body parser consume them first would break those endpoints.
   const app = await NestFactory.create(AppModule, { bodyParser: false });
+  app.enableShutdownHooks(); // clean shutdown on SIGTERM (rolling deploys)
 
   // Build the Provider explicitly (async) before we mount it. Must precede
   // listen() so the instance exists when we reference it.
@@ -36,8 +39,18 @@ async function bootstrap() {
   // are computed against the real https origin, not the internal http hop.
   express.set('trust proxy', true);
 
-  // A tiny health route, registered BEFORE the oidc catch-all so it wins.
-  express.get('/healthz', (_req, res) => res.json({ status: 'ok' }));
+  // Readiness probe (for nginx / monitoring): verify Postgres + Redis are
+  // reachable. Registered BEFORE the oidc catch-all so it wins.
+  const dataSource = app.get(DataSource);
+  express.get('/healthz', async (_req, res) => {
+    try {
+      await dataSource.query('SELECT 1');
+      await redis().ping();
+      res.json({ status: 'ok' });
+    } catch (e: any) {
+      res.status(503).json({ status: 'unhealthy', error: e?.message ?? String(e) });
+    }
+  });
 
   // Our login UI. Also BEFORE the oidc catch-all so /interaction/* is handled
   // by us, not by oidc-provider's router.

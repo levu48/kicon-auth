@@ -1,0 +1,12 @@
+node_modules
+dist
+.git
+.env
+.env.*
+!.env.example
+!.env.prod.example
+secrets
+sandbox
+docs
+*.log
+.DS_Store

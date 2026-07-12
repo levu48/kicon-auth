@@ -14,6 +14,7 @@
     "migration:run": "typeorm-ts-node-commonjs migration:run -d src/database/data-source.ts",
     "migration:revert": "typeorm-ts-node-commonjs migration:revert -d src/database/data-source.ts",
     "migration:generate": "typeorm-ts-node-commonjs migration:generate -d src/database/data-source.ts",
+    "migration:run:prod": "typeorm migration:run -d dist/database/data-source.js",
     "keys:init": "ts-node -T src/oidc/keys/cli.ts init",
     "keys:list": "ts-node -T src/oidc/keys/cli.ts list",
     "keys:rotate": "ts-node -T src/oidc/keys/cli.ts rotate"
