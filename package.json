@@ -17,7 +17,9 @@
     "migration:run:prod": "typeorm migration:run -d dist/database/data-source.js",
     "keys:init": "ts-node -T src/oidc/keys/cli.ts init",
     "keys:list": "ts-node -T src/oidc/keys/cli.ts list",
-    "keys:rotate": "ts-node -T src/oidc/keys/cli.ts rotate"
+    "keys:rotate": "ts-node -T src/oidc/keys/cli.ts rotate",
+    "user:create": "ts-node -T src/admin/user-cli.ts create",
+    "user:list": "ts-node -T src/admin/user-cli.ts list"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.4",
