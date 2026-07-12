@@ -7,3 +7,5 @@ dist/
 sandbox/**/node_modules/
 # Signing keys — NEVER commit private JWKs (CLAUDE.md). Provided via secret in prod.
 secrets/
+# dev notes
+.tmp/
