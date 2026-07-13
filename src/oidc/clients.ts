@@ -85,6 +85,8 @@ export const clients: ClientMetadata[] = [
       'http://localhost:8084/auth/callback',
       'https://vote.kicon.com/auth/callback', // TODO confirm
     ],
+    // RP-initiated logout returns the user to the app's origin.
+    post_logout_redirect_uris: ['http://localhost:8084/', 'https://vote.kicon.com/'],
     scope: 'openid profile email offline_access',
     id_token_signed_response_alg: 'ES256',
     default_acr_values: [ACR_PWD],

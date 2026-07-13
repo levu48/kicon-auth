@@ -30,6 +30,21 @@ export function buildConfiguration(opts: {
       // auto-true once the issuer is https (i.e. in prod behind nginx).
     },
 
+    // Browser (SPA) clients call the token/userinfo endpoints cross-origin from
+    // their own site (e.g. vote.kicon.com -> auth.kicon.com/token). Allow CORS
+    // ONLY from an origin that matches one of the requesting client's registered
+    // redirect_uris — never a wildcard. Confidential/server clients don't hit CORS.
+    clientBasedCORS(_ctx: any, origin: string, client: any) {
+      if (!client || !origin) return false;
+      return (client.redirectUris ?? []).some((u: string) => {
+        try {
+          return new URL(u).origin === origin;
+        } catch {
+          return false;
+        }
+      });
+    },
+
     // scope -> claims mapping. Claim-bearing scopes go here; resource-only scopes
     // (no claims) are declared in `scopes` below.
     claims: {
