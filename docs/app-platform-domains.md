@@ -96,3 +96,33 @@ Registered as a first-party client in `src/oidc/clients.ts`, tenant `apps` in
 > tenant. Membership gating for a VietCouncil vote is authorization handled at the
 > vote resource server (or via VietCouncil's own API), not civic identity claims
 > leaking across the partition.
+
+## Client integration notes (what a relying party must send)
+
+Clients auto-configure endpoints from `/.well-known/openid-configuration`, but a
+few IdP behaviours are not discoverable and every integrator (SPA or server) hits
+them:
+
+- **PKCE is mandatory** for all clients, including confidential ones (S256; `plain`
+  is disabled). No exceptions — a code flow without `code_challenge` is rejected.
+- **Exact redirect-URI match.** No wildcards or path-prefixing; the full URI must be
+  registered. Same for `post_logout_redirect_uri` (must be a registered
+  `post_logout_redirect_uris` value or RP-initiated logout is refused).
+- **`offline_access` requires `prompt=consent`.** This is the non-obvious one: to
+  receive a **refresh token**, the authorization request must include both
+  `scope=…offline_access` **and** `prompt=consent`. Without `prompt=consent`,
+  oidc-provider silently strips `offline_access` and issues no refresh token — so a
+  SPA's silent-renew has nothing to renew with. For **first-party** clients the
+  consent is **auto-approved server-side (no consent screen)**, so sending
+  `prompt=consent` stays seamless — it just unlocks the refresh token. (The vote
+  SPA sets `prompt: 'consent'` for exactly this reason.)
+- **CORS is client-scoped.** Browser clients may call `/token` and `/me`
+  cross-origin, but only from an origin that matches one of *their own* registered
+  `redirect_uris` (see `clientBasedCORS` in `src/oidc/oidc.config.ts`). Register the
+  app's real origin as a redirect URI and its CORS is enabled automatically; there
+  is no wildcard origin.
+- **First-party clients skip the consent screen** entirely (auto-granted via
+  `loadExistingGrant`). The only reason a first-party client sends `prompt=consent`
+  is the `offline_access` rule above — not to render a screen.
+- **Cross-tenant assurance/SSO** still applies: civic/trader force fresh auth + MFA
+  regardless of an existing session; app-tier clients (e.g. `vote`) get seamless SSO.
