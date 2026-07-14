@@ -84,6 +84,8 @@ export const clients: ClientMetadata[] = [
     redirect_uris: [
       'http://localhost:8084/auth/callback',
       'https://vote.kicon.com/auth/callback', // TODO confirm
+      'http://localhost:8084/auth/popup-callback',
+      'https://vote.kicon.com/auth/popup-callback',
     ],
     // RP-initiated logout returns the user to the app's origin.
     post_logout_redirect_uris: ['http://localhost:8084/', 'https://vote.kicon.com/'],
