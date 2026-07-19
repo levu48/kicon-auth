@@ -88,7 +88,16 @@ export const clients: ClientMetadata[] = [
       'https://vote.kicon.com/auth/popup-callback',
     ],
     // RP-initiated logout returns the user to the app's origin.
-    post_logout_redirect_uris: ['http://localhost:8084/', 'https://vote.kicon.com/'],
+    // The embedded consumer widget cannot navigate its own iframe to the IdP
+    // end-session page (auth denies framing), so it signs out via a top-level
+    // popup that lands back on the popup-logout-callback path — the logout
+    // counterpart to the /auth/popup-callback entries in redirect_uris above.
+    post_logout_redirect_uris: [
+      'http://localhost:8084/',
+      'https://vote.kicon.com/',
+      'http://localhost:8084/auth/popup-logout-callback',
+      'https://vote.kicon.com/auth/popup-logout-callback',
+    ],
     scope: 'openid profile email offline_access',
     id_token_signed_response_alg: 'ES256',
     default_acr_values: [ACR_PWD],
