@@ -93,4 +93,32 @@ export const clients: ClientMetadata[] = [
     id_token_signed_response_alg: 'ES256',
     default_acr_values: [ACR_PWD],
   },
+  {
+    // Admin surface of the vote app (see docs/app-platform-domains.md). Its OWN
+    // origin (admin.vote.kicon.com), a SEPARATE client from the embeddable `vote`
+    // consumer — the highest-privilege surface, never framed. Deliberately
+    // stricter than `vote`: forced re-auth + MFA (like civic/trader, no silent
+    // SSO from any session), and NO refresh token on the admin origin (no
+    // offline_access / no popup) — a short privileged session, cheap re-auth.
+    // Registering these redirect_uris also auto-enables the surface's CORS via
+    // the clientBasedCORS hook in oidc.config.ts. WHO is an admin is app-tier
+    // authz at the vote resource server; the IdP only enforces auth strength.
+    client_id: 'vote-admin',
+    client_name: 'Kicon Vote Admin — app platform (public SPA + PKCE, never framed)',
+    token_endpoint_auth_method: 'none', // public client; PKCE is its only proof
+    grant_types: ['authorization_code'], // no refresh_token on the admin origin
+    response_types: ['code'],
+    redirect_uris: [
+      'http://localhost:8085/auth/callback',
+      'https://admin.vote.kicon.com/auth/callback', // TODO confirm
+    ],
+    post_logout_redirect_uris: ['http://localhost:8085/', 'https://admin.vote.kicon.com/'],
+    scope: 'openid profile email', // no offline_access — no refresh token
+    id_token_signed_response_alg: 'ES256',
+    // Brokerage-grade, like xbottrader: forced re-auth on every authorization (no
+    // silent SSO from a consumer/food/civic session), MFA mandatory (enforced in
+    // the login step). The admin SPA also sends prompt=login.
+    default_max_age: 0,
+    default_acr_values: [ACR_MFA],
+  },
 ];
