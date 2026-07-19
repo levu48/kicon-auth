@@ -1,0 +1,86 @@
+name: Deploy to droplet
+
+# MANUAL ONLY. This touches the production crown-jewel IdP, so it never triggers
+# on push — you run it deliberately, and the `production` environment gate can
+# require a human approval before it proceeds (see setup notes at the bottom).
+#
+# It performs the rolling redeploy from docs/redeploy.md over SSH: git pull ->
+# build -> migrate -> recreate app1 then app2 one at a time (nginx always keeps a
+# live upstream) -> verify /healthz.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "deploy" to confirm a production deploy'
+        required: true
+        default: ''
+
+concurrency:
+  group: deploy-production # never two deploys at once
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Rolling redeploy
+    runs-on: ubuntu-latest
+    # Requires a GitHub Environment named "production". Add required reviewers to
+    # it to make this an approval-gated deploy.
+    environment: production
+    steps:
+      - name: Guard on confirmation input
+        run: |
+          [ "${{ github.event.inputs.confirm }}" = "deploy" ] \
+            || { echo "::error::type 'deploy' to confirm"; exit 1; }
+
+      - name: Rolling redeploy over SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+          # Checkout path on the droplet (docs/deployment.md uses /opt/kicon-idp).
+          APP_DIR: ${{ vars.DEPLOY_APP_DIR || '/opt/kicon-idp' }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          # Host-key pinning (no blind TOFU): DEPLOY_KNOWN_HOSTS = `ssh-keyscan HOST`.
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
+
+          # Remote script passed as one quoted arg (avoids nesting a heredoc inside
+          # a YAML block scalar). $APP_DIR expands locally into the single-quoted
+          # path; nothing else needs remote-side expansion.
+          ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes "$USER@$HOST" "
+            set -euo pipefail
+            cd '$APP_DIR'
+            git pull --ff-only
+            docker compose -f docker-compose.prod.yml build
+            # Idempotent: TypeORM runs only pending migrations (no-op if none).
+            docker compose -f docker-compose.prod.yml run --rm migrate
+            # Roll one instance at a time so nginx never loses all upstreams.
+            docker compose -f docker-compose.prod.yml up -d --no-deps --force-recreate app1
+            sleep 5
+            docker compose -f docker-compose.prod.yml up -d --no-deps --force-recreate app2
+            docker compose -f docker-compose.prod.yml ps
+          "
+
+      - name: Verify live
+        run: |
+          for i in $(seq 1 12); do
+            if curl -sf --max-time 8 https://auth.kicon.com/healthz | grep -q '"status":"ok"'; then
+              echo "live and healthy"; exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::auth.kicon.com/healthz not ok after deploy"; exit 1
+
+# ─── One-time setup required before this workflow can run ────────────────────
+# 1. Create a deploy SSH key; put its PUBLIC half in the droplet deploy user's
+#    ~/.ssh/authorized_keys.
+# 2. Repo → Settings → Secrets and variables → Actions, add secrets:
+#      DEPLOY_SSH_KEY     the PRIVATE key (whole file)
+#      DEPLOY_HOST        auth.kicon.com  (or the droplet IP)
+#      DEPLOY_USER        deploy
+#      DEPLOY_KNOWN_HOSTS output of:  ssh-keyscan auth.kicon.com
+#    (optional) variable DEPLOY_APP_DIR if the checkout isn't /opt/kicon-idp.
+# 3. Repo → Settings → Environments → New environment "production" → add
+#    "Required reviewers" to gate each deploy behind a human approval.
