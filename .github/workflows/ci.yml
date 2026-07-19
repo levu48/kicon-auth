@@ -1,0 +1,130 @@
+name: CI
+
+# Build + integration smoke + prod image build. There is no unit-test suite yet,
+# so the gate is: does it compile, and does a real instance boot against Postgres
+# + Redis and answer correctly (incl. the vote-admin client being recognized).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (compile gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+          retention-days: 3
+
+  smoke:
+    name: Integration smoke (pg + redis)
+    runs-on: ubuntu-latest
+    needs: build
+    env:
+      NODE_ENV: development # exercises the dev seed path; avoids prod-secret guards
+      PORT: '3000'
+      ISSUER: http://localhost:3000
+      COOKIE_KEYS: ci-key-1,ci-key-2
+      JWKS_PATH: ./secrets/jwks.json
+      DATABASE_URL: postgres://kicon:kicon@localhost:5432/kicon_idp
+      REDIS_URL: redis://localhost:6379
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: kicon
+          POSTGRES_PASSWORD: kicon
+          POSTGRES_DB: kicon_idp
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U kicon -d kicon_idp"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+      - name: Run migrations (schema is migration-owned, not synchronize)
+        run: npm run migration:run:prod
+
+      - name: Generate signing keys
+        run: |
+          mkdir -p secrets
+          npm run keys:init          # writes an ephemeral ES256 JWKS for this run
+
+      - name: Boot the IdP
+        run: |
+          node dist/main.js > app.log 2>&1 &
+          echo "APP_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for /healthz
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf --max-time 5 http://localhost:3000/healthz | grep -q '"status":"ok"'; then
+              echo "healthy after ${i} tries"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::app did not become healthy"; exit 1
+
+      - name: Assert discovery + endpoints
+        run: |
+          iss=$(curl -sf http://localhost:3000/.well-known/openid-configuration \
+                | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).issuer))')
+          echo "issuer: $iss"
+          [ "$iss" = "http://localhost:3000" ] || { echo "::error::unexpected issuer"; exit 1; }
+
+      - name: Assert vote-admin is a recognized client
+        run: |
+          Q="response_type=code&scope=openid&redirect_uri=http://localhost:8085/auth/callback&code_challenge=abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG&code_challenge_method=S256&nonce=n1&state=s1"
+
+          # vote-admin: recognized + :8085 redirect accepted -> 303 to the login interaction
+          code=$(curl -s -o /dev/null -D headers.txt -w '%{http_code}' "http://localhost:3000/auth?client_id=vote-admin&$Q")
+          echo "vote-admin -> HTTP $code"; grep -i '^location:' headers.txt || true
+          { [ "$code" = "303" ] && grep -qi '^location:.*/interaction/' headers.txt; } \
+            || { echo "::error::vote-admin not recognized (expected 303 -> /interaction)"; exit 1; }
+
+          # control: an unknown client must be rejected as invalid_client
+          body=$(curl -s "http://localhost:3000/auth?client_id=definitely-not-a-client&$Q")
+          echo "$body" | grep -qi 'invalid_client' \
+            || { echo "::error::control probe did not return invalid_client"; exit 1; }
+          echo "vote-admin recognized; unknown client correctly rejected."
+
+      - name: App logs (always)
+        if: always()
+        run: cat app.log || true
+
+  docker:
+    name: Prod image builds
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production image (multi-stage + argon2 native addon)
+        run: docker build -t kicon-idp:ci .
