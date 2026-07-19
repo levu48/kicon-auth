@@ -111,7 +111,9 @@ accounts through your registration/admin path.
   `docker compose -f docker-compose.prod.yml up -d --no-deps --force-recreate app1`
   (then `app2`). Old tokens stay valid until their key is pruned.
 - **Zero-downtime deploy:** `build` the new image, `run --rm migrate`, then recreate
-  `app1` and `app2` one at a time so nginx always has a live upstream.
+  `app1` and `app2` one at a time so nginx always has a live upstream. For the
+  recurring "I pushed a change, get it live" flow (and when to skip `migrate`), see
+  [`redeploy.md`](redeploy.md).
 - **Health/monitoring:** point DO monitoring / an uptime check at `/healthz`; alert on 503.
 - **Logs:** `docker compose -f docker-compose.prod.yml logs -f app1`.
 
