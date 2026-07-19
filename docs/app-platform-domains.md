@@ -23,8 +23,9 @@ auth origin.
 | Domain | Role | Type |
 |---|---|---|
 | `kicon.com` (apex) | First-party portal / app catalog home | OAuth client of the IdP |
-| `apps.kicon.com` | App **platform shell** — dashboard, catalog, standalone app views | OAuth client |
-| `vote.kicon.com` | The **voting app**, on its own origin | OAuth client (registered — see below) |
+| `apps.kicon.com` | App **platform shell** — portal / catalog / standalone launcher only (*not* where per-app admin lives) | OAuth client |
+| `vote.kicon.com` | The **voting app** consumer UI, on its own origin | OAuth client (registered — see below) |
+| `admin.<app>.kicon.com` | Per-app **admin surface** — never framed, its own OAuth client (`admin.vote.kicon.com`, …) | OAuth client (MFA) |
 | `<app>.kicon.com` | Each future app its own origin (`poll`, `forms`, …) | OAuth client |
 | `cdn.kicon.com` | **Cookieless** origin for the embed loader + JS/CSS bundles | static, no credentials |
 | `api.kicon.com` | Resource-server API the apps call (or per-app `vote-api.kicon.com`) | resource server |
@@ -36,6 +37,142 @@ auth origin.
   `Content-Security-Policy: frame-ancestors https://vietcouncil.org` so only that
   partner can frame it. A shared origin would force one policy for everything.
 - Path-based hosting gives none of this — it is all one origin.
+
+## Consumer vs admin surface
+
+Each app has **two surfaces**: an embeddable **consumer UI** (the microfrontend
+users interact with, framed into partner sites) and a privileged **admin UI**
+(managing the app — polls, config, moderation). **They are always different
+origins.**
+
+The consumer UI is the worst place to also host admin:
+
+- It is **embeddable**, so it runs inside third-party contexts and ships a
+  *permissive* `frame-ancestors` CSP — the largest, least-controllable
+  XSS/clickjacking surface in the whole system.
+- The admin UI is the **highest-privilege** surface and must be **never framed**
+  (`frame-ancestors 'none'` / `X-Frame-Options: DENY`).
+- Same origin ⇒ one cookie jar, one token store, one XSS blast radius. A compromise
+  of the embeddable widget could reach the admin session. Separate origins make the
+  admin session **unreachable from the widget's JS** — the browser enforces it.
+
+And admin does **not** go on a shared `apps.kicon.com` (or `app.kicon.com`) either:
+that would collapse *every* app's admin onto one origin — the same anti-pattern this
+doc rejects for `apps.kicon.com/<app>` paths, now applied to the most sensitive
+surface. `apps.kicon.com` stays a portal/launcher only. Admin lives on a **per-app**
+`admin.<app>.kicon.com`.
+
+| Surface | Origin | Framing CSP | OAuth client | Assurance |
+|---|---|---|---|---|
+| Consumer (embeddable) | `vote.kicon.com` | `frame-ancestors` partner allow-list | `vote` (public+PKCE) | loa1, seamless SSO |
+| Admin | `admin.vote.kicon.com` | `frame-ancestors 'none'` | separate `vote-admin` client | MFA + low `default_max_age` |
+
+The admin surface is **just another first-party OAuth client** — its own
+`client_id`, its own `redirect_uris` (registering them auto-enables its CORS via the
+`clientBasedCORS` hook in `src/oidc/oidc.config.ts`), and MFA + forced re-auth
+enforced at the IdP, mirroring the `vietcouncil` / `xbottrader` pattern in
+`src/oidc/clients.ts`. As always, *who* is an admin is app-tier authorization
+resolved at the resource server (scopes/RBAC) — the IdP only enforces the
+authentication *strength* (MFA) required to reach the admin origin.
+
+### Repo layout vs origins
+
+Separate **origins** is a deploy/runtime rule; it says nothing about the **repo**.
+Colocating an app's consumer and admin code in one repo (monorepo) is fine and
+often better — shared types, one API client, one design system, one PR per feature.
+The boundary is enforced by *how the code is served*, not where it is authored.
+
+The one requirement: the repo must emit **two separate build artifacts deployed to
+the two origins** — never one bundle routed by path.
+
+- ✅ Separate entry points → two bundles, two deploys (`apps/consumer` →
+  `vote.kicon.com`, `apps/admin` → `admin.vote.kicon.com`), shared code in
+  `packages/*`.
+- ❌ One bundle serving both surfaces on one origin, split by `/admin/*` — that is
+  the origin-collapse this doc rejects.
+- ⚠️ Keep the shared-code dependency **one-way**: both surfaces depend on
+  `packages/shared`; neither imports the other. Admin code (and its endpoints/
+  secrets) must never end up in the embeddable consumer bundle.
+
+## Repo strategy — polyrepo + `kicon-platform` foundation (decided)
+
+> **Decision.** Apps are **polyrepo** — one repository per app. The shared
+> foundation lives in a single **`kicon-platform`** repo that publishes versioned
+> packages. This is settled; new apps follow it.
+
+Each app repo colocates its own two surfaces (`consumer/` + `admin/`) and a
+private `shared/` for app-local code; anything shared *across* apps is a published
+package from `kicon-platform`, pulled in as a semver-pinned dependency.
+
+```
+kicon-platform            (repo)  → @kicon/ui, @kicon/oidc-client, @kicon/types, …
+  packages/ui                       (design system)
+  packages/oidc-client              (PKCE / silent-renew wrapper — see integration notes)
+  packages/types                    (shared TS types)
+
+vote-app                  (repo)
+  consumer/   → vote.kicon.com          (client: vote)
+  admin/      → admin.vote.kicon.com    (client: vote-admin)
+  shared/     (vote-local, unpublished)
+  package.json → deps: @kicon/ui, @kicon/oidc-client, @kicon/types
+
+cart-app                  (repo)  → cart.kicon.com  / admin.cart.kicon.com
+rideshare-app             (repo)  → rideshare.kicon.com / admin.rideshare.kicon.com
+```
+
+**Why this shape.** Polyrepo makes cross-app isolation *physical* rather than
+policed — `vote-app` literally cannot import `cart-app`'s source, so the one-way /
+no-cross-app-import rules hold by construction, matching the hard-partition
+philosophy in [`CLAUDE.md`](../CLAUDE.md). The single `kicon-platform` repo keeps
+the shared layer (design system, OIDC client, types) in one place to evolve, so we
+avoid scattering foundational code across every app repo.
+
+**The cost we accept.** Shared-code changes are not atomic: publish from
+`kicon-platform`, then bump + deploy each consuming app. Manage the fan-out with
+Changesets (publishing) and Renovate/Dependabot (the internal `@kicon/*` bumps),
+and tolerate some version skew across apps (e.g. `vote` on `@kicon/ui@2.1` while
+`cart` is still on `2.0`).
+
+| | Monorepo (rejected) | **Polyrepo + `kicon-platform` (chosen)** |
+|---|---|---|
+| Cross-app import leakage | prevented by lint/boundary rules | **impossible by construction** |
+| Ownership / permissions | CODEOWNERS per dir | **repo = boundary** |
+| Deploy independence | CI path-filtering | **native per repo** |
+| Shared-code change | one atomic PR | publish → bump each repo |
+| Version skew | none | possible (accepted) |
+
+**Unchanged by the repo choice** (repo-agnostic invariants): each surface is its
+own origin + its own OAuth `client_id`; two build artifacts per app; the consumer
+bundle never contains admin code; each app is its own IdP tenant with data keyed by
+`sub` in the app's own DB.
+
+### Working locally (repo workspace)
+
+The repos are cloned as **siblings under a plain umbrella directory** — not a git
+repo, not submodules (submodules re-introduce the coupling polyrepo avoids):
+
+```
+kicon/                     ← plain directory + a clone-all.sh / repos.json manifest
+  kicon-platform/          shared @kicon/* packages
+  kicon-auth/              this repo (auth.kicon.com IdP)
+  kicon-vote/  kicon-cart/  kicon-www/  …
+```
+
+Operating the tooling (e.g. Claude Code) across this:
+
+- **Default: one session per repo, launched from that repo's root.** Git context,
+  diffs/commits, review, and the repo's own `CLAUDE.md` all scope correctly. Do not
+  run from the bare umbrella as your working mode — the cwd isn't a repo, so
+  git-aware features get muddy and per-repo scoping is lost.
+- **Cross-repo work** (typically editing `kicon-platform` alongside a consumer):
+  root the session in the **app** repo and add the platform repo to it
+  (`--add-dir ../kicon-platform` / `/add-dir`), rather than launching from the
+  umbrella.
+- **`CLAUDE.md`:** each repo owns its own (canonical). An optional thin
+  `kicon/CLAUDE.md` at the umbrella may hold only cross-repo conventions (the
+  polyrepo rules, `@kicon/*` versioning) — a per-repo session picks up both the
+  umbrella file and the repo file. It is not version-controlled with any product,
+  so keep it minimal.
 
 ## Embedding model
 
@@ -73,6 +210,9 @@ special access to auth cookies, exactly like every other client.
   origin and its own TLS cert. A `*.kicon.com` wildcard for the *app fleet* is
   fine, but the auth origin stays separate and is never framed
   (`frame-ancestors 'none'` / `X-Frame-Options: DENY` stay as they are).
+- An app's **admin surface lives on its own `admin.<app>.kicon.com` origin**, never
+  framed, never sharing an origin with the embeddable consumer UI or with another
+  app's admin.
 - Apps store their own data keyed by `sub` (see `data-ownership.md`); they never
   touch the IdP database or another tenant's tables.
 - App-specific authorization (who may vote) lives at the app's resource server via
