@@ -180,6 +180,34 @@ export async function exchange({ clientId, code, verifier, resource }) {
   return json;
 }
 
+/**
+ * Refresh-token exchange.
+ *
+ * `resource` is OMITTED by default on purpose — that is what the browser
+ * actually does. oidc-client-ts's automaticSilentRenew calls signinSilent()
+ * with no arguments, and signinSilent only forwards a resource passed as an
+ * argument (it does not read settings.resource). So the renewal request carries
+ * no resource indicator, and the IdP must resolve the grant's existing one via
+ * resourceIndicators.useGrantedResource.
+ */
+export async function refresh({ clientId, refreshToken, resource, scope }) {
+  const { secret } = CLIENTS[clientId];
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+    ...(resource ? { resource } : {}),
+    ...(scope ? { scope } : {}),
+  });
+  const headers = { 'content-type': 'application/x-www-form-urlencoded' };
+  if (secret) headers.authorization = 'Basic ' + Buffer.from(`${clientId}:${secret}`).toString('base64');
+  else body.set('client_id', clientId);
+
+  const res = await fetch(`${BASE}/token`, { method: 'POST', body, headers });
+  const json = await res.json();
+  if (!res.ok) throw new Error(`refresh ${res.status}: ${JSON.stringify(json)}`);
+  return json;
+}
+
 /** Decode a JWT without verifying (the probes assert on claims, not signatures). */
 export function decodeJwt(t) {
   const parts = (t ?? '').split('.');

@@ -16,7 +16,7 @@
  * If someone "simplifies" getResourceServerInfo to return a fixed scope string,
  * this test is what catches it.
  */
-import { login, check, done, API_RESOURCE, ENROLLED_USER } from './flow.mjs';
+import { login, refresh, decodeJwt, check, done, API_RESOURCE, ENROLLED_USER } from './flow.mjs';
 
 console.log('\n[1] vote — JWT access token shape');
 const r1 = await login({
@@ -86,5 +86,29 @@ check(
   r4.outcome === 'error' && /invalid_target/.test(r4.detail ?? ''),
   `got ${r4.outcome} ${r4.detail ?? ''}`,
 );
+
+console.log('\n[5] silent renew must NOT downgrade to an opaque token');
+// The browser's automaticSilentRenew sends NO `resource` (oidc-client-ts's
+// signinSilent only forwards a resource passed as an argument, and the renew
+// timer calls it with none). If the IdP does not resolve the granted resource
+// for such a request, login works and then ~15 minutes later every API call
+// starts failing with an opaque token — a genuinely horrible bug to trace.
+// This asserts resourceIndicators.useGrantedResource covers it.
+const refreshed = await refresh({
+  clientId: 'vote',
+  refreshToken: r1.tokens.refresh_token,
+  // deliberately no `resource` — mirroring the real renewal request
+});
+const rat = decodeJwt(refreshed.access_token);
+console.log(`  renewed aud: ${JSON.stringify(rat.payload?.aud)}  scope: ${JSON.stringify(rat.payload?.scope)}`);
+check('refresh returned a refresh_token (rotation)', !!refreshed.refresh_token);
+check('renewed access token is still a JWT', !rat.opaque, `${rat.segments} segments — DOWNGRADED to opaque`);
+check('renewed token keeps aud=api.kicon.com', rat.payload?.aud === API_RESOURCE, `got ${JSON.stringify(rat.payload?.aud)}`);
+check(
+  'renewed token keeps its resource scopes',
+  /\bvote:read\b/.test(rat.payload?.scope ?? '') && /\bvote:write\b/.test(rat.payload?.scope ?? ''),
+  `got ${JSON.stringify(rat.payload?.scope)}`,
+);
+check('renewed token still has no vote:admin', !/\bvote:admin\b/.test(rat.payload?.scope ?? ''));
 
 done('token-contract');
