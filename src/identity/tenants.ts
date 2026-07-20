@@ -9,7 +9,15 @@ const TENANT_OF: Record<string, string> = {
   xbottrader: 'trader',
   // kicon app platform (docs/app-platform-domains.md). Its own tenant so app
   // users never receive food/civic/trader claims and vice-versa.
+  //
+  // All three surfaces of the platform share the 'apps' tenant: they are
+  // different origins and different clients, but the same tenant — a vote admin
+  // is the same person seeing the same identity projection as a vote consumer.
+  // (vote-admin was missing here originally, so it resolved to 'unknown' and the
+  // admin surface silently received a different claim projection than intended.)
   vote: 'apps',
+  'vote-admin': 'apps',
+  'vote-bridge': 'apps',
 };
 
 export function tenantOf(clientId: string | undefined): string {

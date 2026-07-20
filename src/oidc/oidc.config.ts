@@ -1,5 +1,6 @@
 import type { Configuration } from 'oidc-provider';
 import { clients } from './clients';
+import { API_RESOURCE, apiScopesFor, getResourceServerInfo } from './resource-servers';
 import { ACR_PWD, ACR_MFA } from '../mfa/acr';
 
 /**
@@ -11,6 +12,29 @@ import { ACR_PWD, ACR_MFA } from '../mfa/acr';
  * Redis-backed store (Phase 3); findAccount is a closure over the Postgres-backed
  * accounts + identity services.
  */
+/**
+ * Scopes the IdP itself understands — resource scopes it owns (`food:*`,
+ * `civic:member`) plus the claim-bearing ones. Resource-SERVER scopes
+ * (`vote:*`) are deliberately absent: they belong to api.kicon.com's
+ * vocabulary, not the IdP's (CLAUDE.md: "keep IdP scopes minimal").
+ *
+ * Exported so loadExistingGrant can tell the two kinds apart. Do not filter by
+ * looking for a ':' in the scope name — `food:orders` is an IdP scope and
+ * `vote:read` is not, and that distinction is not visible in the syntax.
+ */
+const IDP_SCOPES = [
+  'openid',
+  'offline_access',
+  'food:orders',
+  'food:addresses',
+  'civic:member',
+] as const;
+
+/** Claim-bearing scopes (keys of the `claims` map below). Also IdP-side. */
+const IDP_CLAIM_SCOPES = ['openid', 'profile', 'email', 'civic:district'] as const;
+
+const IDP_SCOPE_SET = new Set<string>([...IDP_SCOPES, ...IDP_CLAIM_SCOPES]);
+
 export function buildConfiguration(opts: {
   jwks: any;
   cookieKeys: string[];
@@ -63,7 +87,7 @@ export function buildConfiguration(opts: {
     // refresh_token grant (without it, oidc-provider drops refresh_token from
     // grant_types_supported and rejects clients that declare it). `openid` is
     // listed for completeness; the rest are resource scopes with no own claims.
-    scopes: ['openid', 'offline_access', 'food:orders', 'food:addresses', 'civic:member'],
+    scopes: [...IDP_SCOPES],
 
     // Code flow ONLY. oidc-provider advertises implicit/hybrid by default;
     // CLAUDE.md disallows Implicit (and we don't want hybrid either). Restricting
@@ -94,7 +118,27 @@ export function buildConfiguration(opts: {
 
       // Otherwise mint one granting everything this trusted client asked for.
       const grant = new provider.Grant({ accountId: ctx.oidc.session.accountId, clientId });
-      grant.addOIDCScope(ctx.oidc.params.scope);
+
+      // Split the request into IdP scopes and resource-server scopes. These go
+      // into DIFFERENT buckets on the Grant and are NOT interchangeable:
+      //   addOIDCScope   -> what /me and the id_token may carry
+      //   addResourceScope -> what an access token FOR THAT RESOURCE may carry
+      // Token issuance reads grant.getResourceScopeFiltered(resource, ...), which
+      // consults only the resource bucket. Granting OIDC scopes alone (as this
+      // did before) mints access tokens with an EMPTY `scope` — every check at
+      // api.kicon.com then fails. See docs/app-platform-domains.md.
+      const requested: string[] = (ctx.oidc.params.scope ?? '').split(' ').filter(Boolean);
+      const allowedApi = new Set(apiScopesFor(clientId).split(' ').filter(Boolean));
+
+      // Intersect with the per-client allow-list — never grant what this client
+      // may not have, even if it asked. resource-servers.ts explains why this is
+      // the real boundary rather than defence in depth.
+      const apiScopes = requested.filter((s) => allowedApi.has(s));
+      const oidcScopes = requested.filter((s) => IDP_SCOPE_SET.has(s));
+
+      grant.addOIDCScope(oidcScopes.join(' '));
+      if (apiScopes.length) grant.addResourceScope(API_RESOURCE, apiScopes.join(' '));
+
       await grant.save();
       return grant;
     },
@@ -113,7 +157,49 @@ export function buildConfiguration(opts: {
       revocation: { enabled: true },
       introspection: { enabled: true },
       rpInitiatedLogout: { enabled: true },
-      // TODO Phase 4: backchannelLogout, resourceIndicators, dPoP.
+
+      // RFC 8707 resource indicators — how api.kicon.com gets a JWT access token
+      // with a real `aud` instead of an opaque handle.
+      //
+      // NOTE: this feature is ON BY DEFAULT in oidc-provider 8.x, and its default
+      // getResourceServerInfo throws InvalidTarget. So before this block existed,
+      // any client sending `resource=` already failed — we are supplying the
+      // missing helper, not turning something on. (The old "TODO Phase 4:
+      // resourceIndicators" comment here was wrong about that.)
+      resourceIndicators: {
+        enabled: true,
+        getResourceServerInfo,
+
+        // Let a refresh_token exchange keep the resource it was granted without
+        // re-sending `resource=`. Without this, a silent renew in the SPA returns
+        // a userinfo-audience OPAQUE token and the app breaks ~15 minutes after
+        // login — a genuinely nasty failure to debug, since the initial login works.
+        useGrantedResource: () => true,
+      },
+
+      // TODO Phase 4: backchannelLogout, dPoP.
+    },
+
+    /**
+     * Extra claims on JWT access tokens.
+     *
+     * oidc-provider builds an access-token JWT from a fixed claim set (jti, sub,
+     * iat, exp, scope, client_id, iss, aud, cnf) plus whatever this returns.
+     * `acr` and `auth_time` are NOT in that set — they live on the
+     * AuthorizationCode/RefreshToken, not the AccessToken. api.kicon.com needs
+     * them to enforce step-up on admin routes (acr=loa2), so we copy them across.
+     *
+     * `gty` lets the resource server distinguish a human's token from a
+     * client_credentials one without inferring it from sub === client_id.
+     */
+    async extraTokenClaims(ctx: any, token: any) {
+      if (token?.kind !== 'AccessToken') return undefined;
+      const src = ctx?.oidc?.entities?.AuthorizationCode ?? ctx?.oidc?.entities?.RefreshToken;
+      return {
+        acr: src?.acr ?? undefined,
+        auth_time: src?.authTime ?? undefined,
+        gty: token?.gty ?? undefined,
+      };
     },
 
     // Short-lived access/id tokens; long refresh; very short auth codes.
