@@ -16,7 +16,16 @@
  * If someone "simplifies" getResourceServerInfo to return a fixed scope string,
  * this test is what catches it.
  */
-import { login, refresh, decodeJwt, check, done, API_RESOURCE, ENROLLED_USER } from './flow.mjs';
+import {
+  login,
+  refresh,
+  clientCredentials,
+  decodeJwt,
+  check,
+  done,
+  API_RESOURCE,
+  ENROLLED_USER,
+} from './flow.mjs';
 
 console.log('\n[1] vote — JWT access token shape');
 const r1 = await login({
@@ -110,5 +119,35 @@ check(
   `got ${JSON.stringify(rat.payload?.scope)}`,
 );
 check('renewed token still has no vote:admin', !/\bvote:admin\b/.test(rat.payload?.scope ?? ''));
+
+console.log('\n[6] vote-bridge — client_credentials for the partner eligibility bridge');
+// This client registration failed FOUR different ways before it worked, none of
+// which surface until something actually requests a token:
+//   scope:'' rejected ("must be a non-empty string if provided") -> omit it
+//   grant_types rejected -> features.clientCredentials must be enabled
+//   id_token_signed_response_alg defaulted to RS256 -> rejected, keystore is ES256
+//   (and resource scopes cannot go in client metadata at all)
+// Registration errors are silent until exercised, hence this probe.
+const cc = await clientCredentials({
+  clientId: 'vote-bridge',
+  scope: 'vote:eligibility:write',
+  resource: API_RESOURCE,
+});
+check('client_credentials succeeded', !!cc.access_token, `got ${cc.error}: ${cc.error_description}`);
+
+const ccat = decodeJwt(cc.access_token);
+console.log(`  sub: ${ccat.payload?.sub}  scope: ${JSON.stringify(ccat.payload?.scope)}`);
+check('machine token is a JWT', !ccat.opaque);
+check('aud is the API resource', ccat.payload?.aud === API_RESOURCE, `got ${JSON.stringify(ccat.payload?.aud)}`);
+check(
+  'scope is exactly vote:eligibility:write',
+  ccat.payload?.scope === 'vote:eligibility:write',
+  `got ${JSON.stringify(ccat.payload?.scope)}`,
+);
+// No account exists, so oidc-provider sets sub = client_id. This is how the
+// resource server tells a machine token from a human one — `gty` is NOT emitted
+// on client_credentials tokens, so it cannot be relied on for that.
+check('sub equals client_id (machine token marker)', ccat.payload?.sub === 'vote-bridge', `got ${ccat.payload?.sub}`);
+check('bridge cannot read or write votes', !/\bvote:(read|write|admin)\b/.test(ccat.payload?.scope ?? ''));
 
 done('token-contract');

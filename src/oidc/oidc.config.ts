@@ -158,6 +158,13 @@ export function buildConfiguration(opts: {
       introspection: { enabled: true },
       rpInitiatedLogout: { enabled: true },
 
+      // Service-to-service only (CLAUDE.md permits Client Credentials for
+      // exactly that). Required for the `vote-bridge` partner client; without
+      // it oidc-provider rejects the registration outright with
+      // "grant_types can only contain 'authorization_code' or 'refresh_token'".
+      // No human, no session — the resulting token's `sub` is the client_id.
+      clientCredentials: { enabled: true },
+
       // RFC 8707 resource indicators — how api.kicon.com gets a JWT access token
       // with a real `aud` instead of an opaque handle.
       //

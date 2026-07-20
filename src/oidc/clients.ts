@@ -171,9 +171,16 @@ export const clients: ClientMetadata[] = [
     // flow. Listing them would be meaningless and would widen clientBasedCORS.
     response_types: [],
     redirect_uris: [],
-    // Empty for the same reason as the vote clients: vote:eligibility:write is a
-    // resource-server scope and oidc-provider rejects those in client metadata.
-    // resource-servers.ts grants it for the api.kicon.com resource.
-    scope: '',
+    // `scope` is OMITTED, not empty. vote:eligibility:write is a resource-server
+    // scope, and oidc-provider rejects those in client metadata ("scope must
+    // only contain Authorization Server supported scope values") — but it also
+    // rejects an empty string ("scope must be a non-empty string if provided").
+    // Omitting the field is the only valid way to say "no IdP-level scopes".
+    // resource-servers.ts grants the actual scope for the api.kicon.com resource.
+    //
+    // Required even though client_credentials never yields an id_token:
+    // oidc-provider validates this metadata for every client, and the keystore
+    // holds ES256 keys only, so the RS256 default is rejected.
+    id_token_signed_response_alg: 'ES256',
   },
 ];

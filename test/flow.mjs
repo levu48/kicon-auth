@@ -31,6 +31,8 @@ export const CLIENTS = {
   },
   vote: { redirectUri: 'http://localhost:8084/auth/callback' },
   'vote-admin': { redirectUri: 'http://localhost:8085/auth/callback' },
+  // Machine client: no redirect_uri, no browser flow.
+  'vote-bridge': { secret: 'dev-vote-bridge-secret-CHANGE-ME' },
 };
 
 const b64url = (b) => Buffer.from(b).toString('base64url');
@@ -206,6 +208,31 @@ export async function refresh({ clientId, refreshToken, resource, scope }) {
   const json = await res.json();
   if (!res.ok) throw new Error(`refresh ${res.status}: ${JSON.stringify(json)}`);
   return json;
+}
+
+/**
+ * Client-credentials grant (service-to-service, no user).
+ *
+ * Returns the raw token response, or `{ error, error_description }` on failure —
+ * client registration problems surface here as invalid_client_metadata, which is
+ * exactly what this is meant to catch.
+ */
+export async function clientCredentials({ clientId, scope, resource }) {
+  const { secret } = CLIENTS[clientId];
+  const body = new URLSearchParams({
+    grant_type: 'client_credentials',
+    ...(scope ? { scope } : {}),
+    ...(resource ? { resource } : {}),
+  });
+  const res = await fetch(`${BASE}/token`, {
+    method: 'POST',
+    body,
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      authorization: 'Basic ' + Buffer.from(`${clientId}:${secret}`).toString('base64'),
+    },
+  });
+  return res.json();
 }
 
 /** Decode a JWT without verifying (the probes assert on claims, not signatures). */
