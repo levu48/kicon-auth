@@ -98,6 +98,15 @@ export const clients: ClientMetadata[] = [
       'http://localhost:8084/auth/popup-logout-callback',
       'https://vote.kicon.com/auth/popup-logout-callback',
     ],
+    // NOTE: the vote:* resource-server scopes for api.kicon.com deliberately do
+    // NOT appear here, and CANNOT. oidc-provider validates this string against
+    // the provider-level `scopes` array at client load and rejects anything else
+    // ("scope must only contain Authorization Server supported scope values").
+    // Resource scopes are not provider scopes, by design.
+    //
+    // So which vote:* scopes this client may obtain is decided ENTIRELY by the
+    // per-client map in resource-servers.ts. That file is the whole boundary —
+    // there is no second line of defence here. Read it before changing anything.
     scope: 'openid profile email offline_access',
     id_token_signed_response_alg: 'ES256',
     default_acr_values: [ACR_PWD],
@@ -122,12 +131,56 @@ export const clients: ClientMetadata[] = [
       'https://admin.vote.kicon.com/auth/callback', // TODO confirm
     ],
     post_logout_redirect_uris: ['http://localhost:8085/', 'https://admin.vote.kicon.com/'],
-    scope: 'openid profile email', // no offline_access — no refresh token
+    // As on the `vote` client: vote:admin cannot be listed here (oidc-provider
+    // rejects non-provider scopes in client metadata). resource-servers.ts is
+    // what grants it. And vote:admin alone never makes someone an admin —
+    // api.kicon.com also requires an app_role_assignments row and acr=loa2.
+    //
+    // Consequence of having no offline_access: this client cannot refresh, so
+    // the 15-minute access token IS the admin session. An admin re-authenticates
+    // (with MFA, since default_max_age is 0) every 15 minutes. Deliberate.
+    scope: 'openid profile email',
     id_token_signed_response_alg: 'ES256',
     // Brokerage-grade, like xbottrader: forced re-auth on every authorization (no
     // silent SSO from a consumer/food/civic session), MFA mandatory (enforced in
     // the login step). The admin SPA also sends prompt=login.
     default_max_age: 0,
     default_acr_values: [ACR_MFA],
+  },
+  {
+    // Partner eligibility bridge — the ONLY client_credentials client, and the
+    // only non-human one. No user, no redirect, no login.
+    //
+    // Why it exists: a VietCouncil poll must be restricted to VietCouncil
+    // members, but civic membership must NOT leak into the apps tenant as a
+    // claim (docs/app-platform-domains.md: gating is "authorization handled at
+    // the vote resource server ... not civic identity claims leaking across the
+    // partition"). So VietCouncil's own backend calls api.kicon.com and asserts
+    // "this sub is a member of this org". The resource server stores that grant
+    // keyed by sub and never learns WHY — it never sees civic_residency.
+    //
+    // Scope is deliberately a single narrow write. This client can add an
+    // eligibility grant and do nothing else: it cannot read polls, cast a
+    // ballot, or administer anything.
+    client_id: 'vote-bridge',
+    client_name: 'Kicon Vote — partner eligibility bridge (machine-to-machine)',
+    client_secret: 'dev-vote-bridge-secret-CHANGE-ME',
+    token_endpoint_auth_method: 'client_secret_basic',
+    grant_types: ['client_credentials'],
+    // No response_types / redirect_uris: client_credentials never runs a browser
+    // flow. Listing them would be meaningless and would widen clientBasedCORS.
+    response_types: [],
+    redirect_uris: [],
+    // `scope` is OMITTED, not empty. vote:eligibility:write is a resource-server
+    // scope, and oidc-provider rejects those in client metadata ("scope must
+    // only contain Authorization Server supported scope values") — but it also
+    // rejects an empty string ("scope must be a non-empty string if provided").
+    // Omitting the field is the only valid way to say "no IdP-level scopes".
+    // resource-servers.ts grants the actual scope for the api.kicon.com resource.
+    //
+    // Required even though client_credentials never yields an id_token:
+    // oidc-provider validates this metadata for every client, and the keystore
+    // holds ES256 keys only, so the RS256 default is rejected.
+    id_token_signed_response_alg: 'ES256',
   },
 ];

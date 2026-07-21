@@ -116,6 +116,30 @@ jobs:
             || { echo "::error::control probe did not return invalid_client"; exit 1; }
           echo "vote-admin recognized; unknown client correctly rejected."
 
+      - name: Create an un-enrolled account (for the MFA matrix)
+        # The dev seed account is MFA-enrolled. The civic "encouraged" policy can
+        # only be tested with a user who has NO second factor.
+        env:
+          USER_PASSWORD: demo-pass-123
+        run: npm run user:create -- --email nomfa@example.com --name 'No MFA User'
+
+      - name: Token contract for api.kicon.com (incl. privilege-escalation probe)
+        # Drives the real browser flow and asserts the access token is a JWT with
+        # a non-empty, correctly-scoped `scope` for aud=https://api.kicon.com.
+        #
+        # The load-bearing assertion: the embeddable `vote` client must NOT be
+        # able to obtain vote:admin. Resource scopes cannot be expressed in client
+        # metadata, so src/oidc/resource-servers.ts is the ONLY thing enforcing
+        # that — there is no second line of defence for this test to fall back on.
+        run: BASE=http://localhost:3000 node test/token-contract.mjs
+
+      - name: MFA policy matrix
+        # Every client x (enrolled, un-enrolled). Guards both directions: that
+        # vote-admin/trader REFUSE un-enrolled users, and that civic still lets
+        # them in at loa1 (it declares ACR_MFA too, so a naive implementation
+        # locks every un-enrolled civic user out).
+        run: BASE=http://localhost:3000 node test/mfa-matrix.mjs
+
       - name: App logs (always)
         if: always()
         run: cat app.log || true

@@ -155,14 +155,19 @@ export function buildInteractionsRouter(
           }
         });
 
-        // Does this tenant require a second factor?
+        // Does this tenant — or the request's requested acr — need a second factor?
         const details = await provider.interactionDetails(req, res);
         const tenant = tenantOf(details.params.client_id);
         const enrolled = await mfa.isEnrolled(user!.id);
+        // Both the client id and the requested acr matter — vote-admin is
+        // mandatory-MFA by client, civic is by enrollment. See mfaRequired().
+        const clientId = details.params.client_id as string | undefined;
+        const acrValues = details.params.acr_values as string | undefined;
 
-        if (mfaRequired(tenant, enrolled)) {
+        if (mfaRequired(tenant, enrolled, { clientId, acrValues })) {
           if (!enrolled) {
-            // Mandatory (trader) but not enrolled — a real UX would force enrollment here.
+            // Mandatory (trader / an admin surface) but not enrolled — a real UX
+            // would force enrollment here.
             audit.emit('login.failure', {
               outcome: 'failure',
               actor_sub: user!.id,
@@ -386,11 +391,18 @@ export function buildInteractionsRouter(
           detail: { email, client_id: clientId },
         });
 
-        // A brand-new account is never MFA-enrolled. If this client's tenant makes
-        // MFA mandatory (trader), we can't complete the sign-in here yet — the
-        // account exists, but enrollment (not built) is required first.
+        // A brand-new account is never MFA-enrolled. If this surface makes MFA
+        // mandatory (trader, or an admin origin), we can't complete the sign-in
+        // here yet — the account exists, but enrollment (not built) is required
+        // first. Note `enrolled: false` means the voluntary acr clause in
+        // mfaRequired() cannot fire, so only the mandatory rules apply.
         const tenant = tenantOf(clientId);
-        if (mfaRequired(tenant, false)) {
+        if (
+          mfaRequired(tenant, false, {
+            clientId,
+            acrValues: details.params.acr_values as string | undefined,
+          })
+        ) {
           res
             .status(403)
             .type('html')

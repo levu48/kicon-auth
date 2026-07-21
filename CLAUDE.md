@@ -163,6 +163,41 @@ gated: the civic and (especially) trader clients must not be silently
 authenticated by a food session. Enforce with `prompt=login` and/or a low
 `max_age` on those clients, and require MFA before issuing their tokens.
 
+### MFA policy
+
+Implemented in `mfaRequired()` (`src/mfa/mfa.service.ts`), in precedence order:
+
+| Rule | Applies to | If not enrolled |
+|---|---|---|
+| Mandatory client | `vote-admin` | **refuse** (403) |
+| Mandatory tenant | `trader` | **refuse** (403) |
+| Request asked for loa2 **and** user is enrolled | any client | falls through |
+| Tenant policy | `civic` — required once enrolled | log in at loa1 |
+| Default | `food`, `apps` consumer | log in at loa1 |
+
+Two things here are easy to get wrong:
+
+- **Mandatory-ness is per CLIENT, not per tenant.** The vote app's two surfaces
+  share the `apps` tenant but have opposite requirements — the embeddable
+  consumer widget is standard assurance, the admin origin is not.
+- **It cannot be derived from `default_acr_values`.** Both `vote-admin`
+  (mandatory) and `vietcouncil` (encouraged) declare `ACR_MFA`. Treating that
+  declaration as mandatory locks every un-enrolled civic user out, contradicting
+  the civic policy above. `default_acr_values` means "loa2 is wanted", not "loa2
+  or nothing" — OIDC treats `acr_values` as voluntary.
+
+> Historical note: `vote-admin` advertised `default_acr_values:[ACR_MFA]` and its
+> registration comment claimed "MFA mandatory (enforced in the login step)", but
+> the `apps` tenant fell through to `return false`, so the admin surface issued
+> **loa1** tokens and no second factor was ever requested. This matters beyond
+> the IdP: `api.kicon.com` gates destructive admin routes on `acr === loa2`, and
+> an unenforced `acr` is a control that only looks enforced.
+
+**Enrollment is not built yet.** A mandatory-MFA surface refuses un-enrolled
+users with a 403 and no way forward, so an operator must enroll admins out of
+band before `vote-admin` is usable in production. Self-service enrollment is the
+obvious follow-up.
+
 ---
 
 ## Authorization model
