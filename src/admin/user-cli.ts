@@ -12,6 +12,14 @@
  *   docker compose -f docker-compose.prod.yml run --rm \
  *     --entrypoint "node dist/admin/user-cli.js list" app1
  *
+ * `mfa-enroll` enrols a second factor out of band — self-service enrollment is
+ * not built, and vote-admin makes MFA mandatory, so an operator must do this
+ * before the admin surface is usable. It is interactive (confirms a code), so
+ * run it WITHOUT --rm's default detach and with -it:
+ *
+ *   docker compose -f docker-compose.prod.yml run --rm -it \
+ *     --entrypoint "node dist/admin/user-cli.js mfa-enroll --email a@b.com" app1
+ *
  * Password is read from, in order: USER_PASSWORD env, piped stdin, or a hidden
  * TTY prompt. Argon2id hashing matches AccountsService.hash so login verification
  * (argon2.verify) stays consistent.
@@ -20,7 +28,8 @@ import 'reflect-metadata';
 import { randomBytes } from 'node:crypto';
 import * as argon2 from 'argon2';
 import AppDataSource from '../database/data-source';
-import { User } from '../database/entities';
+import { User, UserMfa } from '../database/entities';
+import { generateSecret, keyuri, verifyToken } from '../mfa/totp';
 
 type Args = Record<string, string | true>;
 
@@ -108,6 +117,82 @@ async function create(args: Args): Promise<void> {
   console.log(`created account: ${user.id}  <${user.primary_email}>  "${user.name}"`);
 }
 
+/** Read one line of visible input (a 6-digit code is not a secret to hide). */
+async function readLine(prompt: string): Promise<string> {
+  process.stdout.write(prompt);
+  const chunks: Buffer[] = [];
+  for await (const c of process.stdin) {
+    chunks.push(c as Buffer);
+    if (Buffer.concat(chunks).includes(0x0a)) break; // stop at first newline
+  }
+  return Buffer.concat(chunks).toString('utf8').replace(/\r?\n.*$/s, '').trim();
+}
+
+/**
+ * Out-of-band TOTP enrollment for one account.
+ *
+ * Self-service enrollment is not built, and `vote-admin` makes a second factor
+ * MANDATORY (src/mfa/mfa.service.ts), so an un-enrolled admin is refused at
+ * login with no way forward. This is how an operator enrolls one, matching what
+ * MfaService.enroll does but from the standalone CLI DataSource.
+ *
+ * The secret is confirmed with a live code BEFORE `enabled_at` is set, unless
+ * --force. That guard matters here specifically: enabling a secret the admin's
+ * authenticator did not actually capture would lock them out of a surface whose
+ * whole point is that it cannot fall back to a password. `enabled_at` is what
+ * MfaService.isEnrolled checks, so a row without it is inert.
+ */
+async function mfaEnroll(args: Args): Promise<void> {
+  const email = typeof args.email === 'string' ? normEmail(args.email) : '';
+  const byId = typeof args.id === 'string' ? args.id : '';
+  if (!email && !byId) throw new Error('--email or --id is required');
+
+  const users = AppDataSource.getRepository(User);
+  const user = await users.findOne({
+    where: email ? { primary_email: email } : { id: byId },
+  });
+  if (!user) throw new Error(`no account for ${email || byId}`);
+
+  const mfa = AppDataSource.getRepository(UserMfa);
+  const existing = await mfa.findOne({ where: { user_id: user.id } });
+  if (existing?.enabled_at && !args.force) {
+    throw new Error(
+      `${user.primary_email} is already enrolled (since ${existing.enabled_at.toISOString()}). ` +
+        `Re-enroll with --force to replace the secret.`,
+    );
+  }
+
+  const secret = generateSecret();
+  const otpauth = keyuri(secret, user.primary_email, 'auth.kicon.com');
+
+  console.log(`\nEnrolling ${user.id}  <${user.primary_email}>\n`);
+  console.log('Add this to an authenticator app (scan the otpauth URI as a QR,');
+  console.log('or type the secret in manually):\n');
+  console.log(`  otpauth:  ${otpauth}`);
+  console.log(`  secret:   ${secret}   (SHA1, 6 digits, 30s)\n`);
+
+  // enabled_at is set only after a code round-trips, so a mis-scanned secret
+  // fails HERE (a re-runnable error) instead of at the admin's next login.
+  let enabledAt: Date;
+  if (args.force && !process.stdin.isTTY) {
+    // Non-interactive --force: enable without a code round-trip. Only for
+    // scripted/seed use where no human is present to read a code.
+    enabledAt = new Date();
+    console.log('--force with no TTY: enabling without code confirmation.\n');
+  } else {
+    const code = await readLine('Enter the current 6-digit code to confirm: ');
+    if (!verifyToken(secret, code)) {
+      throw new Error('code did not verify — nothing saved. Re-run to try again.');
+    }
+    enabledAt = new Date();
+  }
+
+  await mfa.save(
+    mfa.create({ user_id: user.id, type: 'totp', secret, enabled_at: enabledAt }),
+  );
+  console.log(`\nenrolled: ${user.primary_email} (loa2 available from ${enabledAt.toISOString()})`);
+}
+
 async function list(): Promise<void> {
   const users = AppDataSource.getRepository(User);
   const rows = await users.find({ order: { created_at: 'ASC' } });
@@ -130,8 +215,15 @@ async function main(): Promise<void> {
   try {
     if (cmd === 'create') await create(args);
     else if (cmd === 'list') await list();
+    else if (cmd === 'mfa-enroll') await mfaEnroll(args);
     else {
-      console.error('usage: user-cli.js <create --email <e> --name <n> [--locale <l>] [--zoneinfo <z>] [--id <id>] | list>');
+      console.error(
+        'usage: user-cli.js <\n' +
+          "  create --email <e> --name <n> [--locale <l>] [--zoneinfo <z>] [--id <id>]\n" +
+          '  list\n' +
+          '  mfa-enroll (--email <e> | --id <id>) [--force]\n' +
+          '>',
+      );
       process.exitCode = 1;
     }
   } finally {
