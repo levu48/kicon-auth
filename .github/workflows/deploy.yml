@@ -60,6 +60,18 @@ jobs:
             docker compose -f docker-compose.prod.yml up -d --no-deps --force-recreate app1
             sleep 5
             docker compose -f docker-compose.prod.yml up -d --no-deps --force-recreate app2
+            # Recreate nginx LAST, after the apps have their new IPs. Two reasons,
+            # both learned the hard way:
+            #  1. nginx resolves app1/app2 ONCE at its own start and caches those
+            #     IPs for the life of the process. Recreating the apps above gives
+            #     them NEW container IPs, so a long-lived nginx then proxies to
+            #     stale ones -> 'connect() failed (No route to host)' and broken,
+            #     intermittent login flows. Recreating nginx re-resolves them.
+            #  2. nginx.conf is bind-mounted as a single FILE, pinned by inode.
+            #     'git pull' above replaces the file (new inode), so a running
+            #     nginx keeps serving the OLD config on reload/restart. Only a
+            #     recreate re-binds the mount and picks up the pulled config.
+            docker compose -f docker-compose.prod.yml up -d --force-recreate nginx
             docker compose -f docker-compose.prod.yml ps
           "
 
