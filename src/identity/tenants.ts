@@ -18,6 +18,11 @@ const TENANT_OF: Record<string, string> = {
   vote: 'apps',
   'vote-admin': 'apps',
   'vote-bridge': 'apps',
+  // Survey platform — same 'apps' tenant (a survey author is the same person,
+  // same identity projection, as a survey respondent).
+  survey: 'apps',
+  'survey-studio': 'apps',
+  'survey-bridge': 'apps',
 };
 
 export function tenantOf(clientId: string | undefined): string {

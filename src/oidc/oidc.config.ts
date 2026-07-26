@@ -1,6 +1,6 @@
 import type { Configuration } from 'oidc-provider';
 import { clients } from './clients';
-import { API_RESOURCE, apiScopesFor, getResourceServerInfo } from './resource-servers';
+import { RESOURCES, resourceScopesFor, getResourceServerInfo } from './resource-servers';
 import { ACR_PWD, ACR_MFA } from '../mfa/acr';
 
 /**
@@ -128,16 +128,18 @@ export function buildConfiguration(opts: {
       // did before) mints access tokens with an EMPTY `scope` — every check at
       // api.kicon.com then fails. See docs/app-platform-domains.md.
       const requested: string[] = (ctx.oidc.params.scope ?? '').split(' ').filter(Boolean);
-      const allowedApi = new Set(apiScopesFor(clientId).split(' ').filter(Boolean));
-
-      // Intersect with the per-client allow-list — never grant what this client
-      // may not have, even if it asked. resource-servers.ts explains why this is
-      // the real boundary rather than defence in depth.
-      const apiScopes = requested.filter((s) => allowedApi.has(s));
       const oidcScopes = requested.filter((s) => IDP_SCOPE_SET.has(s));
-
       grant.addOIDCScope(oidcScopes.join(' '));
-      if (apiScopes.length) grant.addResourceScope(API_RESOURCE, apiScopes.join(' '));
+
+      // For EACH resource server, intersect the request with this client's
+      // per-resource allow-list — never grant what it may not have, even if it
+      // asked. resource-servers.ts is the real boundary. A survey client gets no
+      // api.kicon.com scopes and vice-versa, because the maps are per-resource.
+      for (const resource of RESOURCES) {
+        const allowed = new Set(resourceScopesFor(resource, clientId).split(' ').filter(Boolean));
+        const granted = requested.filter((s) => allowed.has(s));
+        if (granted.length) grant.addResourceScope(resource, granted.join(' '));
+      }
 
       await grant.save();
       return grant;

@@ -183,4 +183,70 @@ export const clients: ClientMetadata[] = [
     // holds ES256 keys only, so the RS256 default is rejected.
     id_token_signed_response_alg: 'ES256',
   },
+  {
+    // Survey respondent surface (survey.kicon.com). Direct heir of `vote`: its
+    // OWN origin, embeddable into partner sites via an iframe, a public+PKCE
+    // client with a popup callback. Standard assurance. Most respondents are
+    // ANONYMOUS and never use this client at all — they answer via a capability
+    // token minted by the survey api (kicon-survey ADR-0005); this client is for
+    // LOGGED-IN respondents. The survey:respond scope for api.survey.kicon.com is
+    // granted by resource-servers.ts, not listed here (a resource scope).
+    client_id: 'survey',
+    client_name: 'Kicon Survey — respondent (public SPA + PKCE, embeddable)',
+    token_endpoint_auth_method: 'none',
+    grant_types: ['authorization_code', 'refresh_token'],
+    response_types: ['code'],
+    redirect_uris: [
+      'http://localhost:8086/auth/callback',
+      'https://survey.kicon.com/auth/callback', // TODO confirm
+      'http://localhost:8086/auth/popup-callback',
+      'https://survey.kicon.com/auth/popup-callback',
+    ],
+    post_logout_redirect_uris: [
+      'http://localhost:8086/',
+      'https://survey.kicon.com/',
+      'http://localhost:8086/auth/popup-logout-callback',
+      'https://survey.kicon.com/auth/popup-logout-callback',
+    ],
+    scope: 'openid profile email offline_access',
+    id_token_signed_response_alg: 'ES256',
+    default_acr_values: [ACR_PWD],
+  },
+  {
+    // Survey authoring studio (studio.survey.kicon.com). Direct heir of
+    // `vote-admin`: its OWN origin, NEVER framed, the highest-privilege survey
+    // surface. Stricter than `survey`: forced re-auth + MFA (no silent SSO), and
+    // NO refresh token — a short privileged session, cheap re-auth. survey:author/
+    // publish/analyze/admin for api.survey.kicon.com come from resource-servers.ts;
+    // the api additionally gates on RBAC + acr.
+    client_id: 'survey-studio',
+    client_name: 'Kicon Survey Studio — authoring (public SPA + PKCE, never framed)',
+    token_endpoint_auth_method: 'none',
+    grant_types: ['authorization_code'], // no refresh_token on the authoring origin
+    response_types: ['code'],
+    redirect_uris: [
+      'http://localhost:8087/auth/callback',
+      'https://studio.survey.kicon.com/auth/callback', // TODO confirm
+    ],
+    post_logout_redirect_uris: ['http://localhost:8087/', 'https://studio.survey.kicon.com/'],
+    scope: 'openid profile email',
+    id_token_signed_response_alg: 'ES256',
+    default_max_age: 0,
+    default_acr_values: [ACR_MFA],
+  },
+  {
+    // Survey partner bridge (client_credentials, no human) — heir of vote-bridge.
+    // A partner vouches for a respondent so the survey api can mint a capability
+    // token, without the partner's identity model crossing into kicon. Narrow
+    // write only (survey:vouch, from resource-servers.ts); scope OMITTED here for
+    // the same reason as vote-bridge.
+    client_id: 'survey-bridge',
+    client_name: 'Kicon Survey — partner vouch bridge (machine-to-machine)',
+    client_secret: 'dev-survey-bridge-secret-CHANGE-ME',
+    token_endpoint_auth_method: 'client_secret_basic',
+    grant_types: ['client_credentials'],
+    response_types: [],
+    redirect_uris: [],
+    id_token_signed_response_alg: 'ES256',
+  },
 ];
