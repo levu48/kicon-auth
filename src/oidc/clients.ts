@@ -1,10 +1,16 @@
 import type { ClientMetadata } from 'oidc-provider';
 import { ACR_PWD, ACR_MFA } from '../mfa/acr';
+import { secretFor } from './client-secrets';
 
 /**
- * Registered clients, from CLAUDE.md. DEV values below (localhost redirects,
- * placeholder secrets). Prod is still TODO in CLAUDE.md: confirm redirect URIs,
- * finalise confidential-vs-public per client, and load secrets from a vault.
+ * Registered clients, from CLAUDE.md. DEV values below (localhost redirects).
+ * Prod is still TODO in CLAUDE.md: confirm redirect URIs and finalise
+ * confidential-vs-public per client.
+ *
+ * SECRETS are no longer hardcoded here: every confidential client resolves its
+ * secret through `secretFor()`, which reads CLIENT_SECRET_<CLIENT_ID> from the
+ * environment and REFUSES to fall back to a dev placeholder in production (see
+ * client-secrets.ts + docs/client-secrets.md).
  *
  * oidc-provider enforces EXACT redirect-URI matching (no wildcards) — a core
  * CLAUDE.md security requirement, satisfied for free by listing full URIs here.
@@ -34,7 +40,7 @@ export const clients: ClientMetadata[] = [
   {
     client_id: 'vietcouncil',
     client_name: 'Viet Council — civic (confidential)',
-    client_secret: 'dev-vietcouncil-secret-CHANGE-ME',
+    client_secret: secretFor('vietcouncil'),
     token_endpoint_auth_method: 'client_secret_basic',
     grant_types: ['authorization_code', 'refresh_token'],
     response_types: ['code'],
@@ -52,7 +58,7 @@ export const clients: ClientMetadata[] = [
   {
     client_id: 'xbottrader',
     client_name: 'XBotTrader — trader (confidential, high assurance)',
-    client_secret: 'dev-xbottrader-secret-CHANGE-ME',
+    client_secret: secretFor('xbottrader'),
     token_endpoint_auth_method: 'client_secret_basic',
     grant_types: ['authorization_code', 'refresh_token'],
     response_types: ['code'],
@@ -164,7 +170,7 @@ export const clients: ClientMetadata[] = [
     // ballot, or administer anything.
     client_id: 'vote-bridge',
     client_name: 'Kicon Vote — partner eligibility bridge (machine-to-machine)',
-    client_secret: 'dev-vote-bridge-secret-CHANGE-ME',
+    client_secret: secretFor('vote-bridge'),
     token_endpoint_auth_method: 'client_secret_basic',
     grant_types: ['client_credentials'],
     // No response_types / redirect_uris: client_credentials never runs a browser
@@ -242,7 +248,7 @@ export const clients: ClientMetadata[] = [
     // the same reason as vote-bridge.
     client_id: 'survey-bridge',
     client_name: 'Kicon Survey — partner vouch bridge (machine-to-machine)',
-    client_secret: 'dev-survey-bridge-secret-CHANGE-ME',
+    client_secret: secretFor('survey-bridge'),
     token_endpoint_auth_method: 'client_secret_basic',
     grant_types: ['client_credentials'],
     response_types: [],
