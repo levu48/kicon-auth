@@ -23,58 +23,87 @@ import { errors } from 'oidc-provider';
  * Do not "simplify" it away.
  */
 
-/** The one resource server today. Must match api.kicon.com's API_AUDIENCE exactly. */
+/** api.kicon.com — the shared resource server (vote/cart/trade modules). */
 export const API_RESOURCE = 'https://api.kicon.com';
 
 /**
- * client_id → the scopes that client may obtain FOR api.kicon.com.
- *
- * Naming is `<app>:<action>`. A client absent from this map gets no API scopes
- * at all (see the `?? ''` fallback below) — deny by default, so registering a
- * new client never silently grants API access.
+ * api.survey.kicon.com — the survey platform's DEDICATED resource server (a
+ * separate app, not a module in api.kicon.com — kicon-survey ADR-0006). Its own
+ * audience with its own scope vocabulary; a token minted for one resource never
+ * verifies at the other.
  */
-const RS_SCOPES: Record<string, string> = {
-  // Consumer surface (vote.kicon.com, embeddable). Read polls, cast a ballot.
-  // Deliberately NOT vote:admin — this surface is framed into partner sites.
-  vote: 'vote:read vote:write',
+export const SURVEY_RESOURCE = 'https://api.survey.kicon.com';
 
-  // Admin surface (admin.vote.kicon.com, never framed, MFA + forced re-auth).
-  // Note vote:admin is necessary but NOT sufficient at the resource server:
-  // api.kicon.com additionally requires an app_role_assignments row and acr=loa2.
-  // Everyone who logs into the admin origin gets this scope; only actual admins
-  // get past the resource server.
-  'vote-admin': 'vote:read vote:write vote:admin',
+/** Every resource server the IdP knows how to mint access tokens for. */
+export const RESOURCES = [API_RESOURCE, SURVEY_RESOURCE] as const;
 
-  // Partner bridge (client_credentials, no human). Used by VietCouncil to assert
-  // "this sub is a member of this org" so the resource server can gate a poll
-  // WITHOUT civic identity claims crossing the tenant partition
-  // (docs/app-platform-domains.md). Write-only, and only that one narrow thing.
-  'vote-bridge': 'vote:eligibility:write',
+/**
+ * resource → (client_id → the scopes that client may obtain for THAT resource).
+ *
+ * Naming is `<app>:<action>`. A client absent from a resource's map gets no
+ * scopes there at all (the `?? ''` fallback below) — deny by default, so
+ * registering a new client never silently grants access to any resource.
+ */
+const RS_SCOPES: Record<string, Record<string, string>> = {
+  [API_RESOURCE]: {
+    // Consumer surface (vote.kicon.com, embeddable). Read polls, cast a ballot.
+    // Deliberately NOT vote:admin — this surface is framed into partner sites.
+    vote: 'vote:read vote:write',
+
+    // Admin surface (admin.vote.kicon.com, never framed, MFA + forced re-auth).
+    // vote:admin is necessary but NOT sufficient at the resource server:
+    // api.kicon.com additionally requires an app_role_assignments row and acr=loa2.
+    'vote-admin': 'vote:read vote:write vote:admin',
+
+    // Partner bridge (client_credentials, no human). Assert org membership so the
+    // resource server can gate a poll WITHOUT civic claims crossing the partition.
+    'vote-bridge': 'vote:eligibility:write',
+  },
+
+  [SURVEY_RESOURCE]: {
+    // Respondent surface (survey.kicon.com, embeddable). A LOGGED-IN respondent
+    // answers surveys; ANONYMOUS respondents use a capability token instead
+    // (kicon-survey ADR-0005), not an OIDC scope.
+    survey: 'survey:respond',
+
+    // Authoring studio (studio.survey.kicon.com, never framed, MFA + forced
+    // re-auth). Composes, previews, publishes, and analyses. As with vote-admin,
+    // the scope authorizes the SURFACE; the survey api additionally gates on RBAC.
+    'survey-studio': 'survey:author survey:publish survey:analyze survey:admin',
+
+    // Partner survey-bridge (client_credentials, no human). Vouch for a respondent
+    // so the survey api can mint a capability token, WITHOUT the partner's identity
+    // model crossing into kicon. Narrow write only.
+    'survey-bridge': 'survey:vouch',
+  },
 };
 
-/** The scopes `clientId` may obtain for the API, as a space-delimited string. */
+/** The scopes `clientId` may obtain for `resource`, as a space-delimited string. */
+export function resourceScopesFor(resource: string, clientId: string): string {
+  return RS_SCOPES[resource]?.[clientId] ?? '';
+}
+
+/** Back-compat helper: scopes for the api.kicon.com resource (used by the CI assertion). */
 export function apiScopesFor(clientId: string): string {
-  return RS_SCOPES[clientId] ?? '';
+  return resourceScopesFor(API_RESOURCE, clientId);
 }
 
 /**
  * features.resourceIndicators.getResourceServerInfo.
  *
- * Returning accessTokenFormat:'jwt' here is what makes the access token a
- * verifiable JWT instead of an opaque handle — api.kicon.com verifies it locally
- * against /jwks with no introspection round-trip.
- *
- * jwt.sign.alg is pinned to ES256 because the keystore holds ES256 keys only
- * (src/oidc/keys/keystore.ts). Requesting RS256 would fail at issuance.
+ * accessTokenFormat:'jwt' is what makes the access token a verifiable JWT instead
+ * of an opaque handle — the resource server verifies it locally against /jwks
+ * with no introspection round-trip. jwt.sign.alg is pinned to ES256 because the
+ * keystore holds ES256 keys only (src/oidc/keys/keystore.ts).
  */
 export function getResourceServerInfo(_ctx: any, resourceIndicator: string, client: any) {
-  if (resourceIndicator !== API_RESOURCE) {
+  if (!(RESOURCES as readonly string[]).includes(resourceIndicator)) {
     // Unknown resource. InvalidTarget is the RFC 8707 error for this.
     throw new errors.InvalidTarget();
   }
   return {
-    scope: apiScopesFor(client?.clientId ?? ''),
-    audience: API_RESOURCE,
+    scope: resourceScopesFor(resourceIndicator, client?.clientId ?? ''),
+    audience: resourceIndicator,
     accessTokenFormat: 'jwt' as const,
     accessTokenTTL: 15 * 60,
     jwt: { sign: { alg: 'ES256' } },
