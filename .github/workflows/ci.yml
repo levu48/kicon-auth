@@ -25,6 +25,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      # The nginx CSP pins the sha256 of oidc-provider's inline form_post script
+      # by hand (it cannot be derived at the edge). If a dependency bump changes
+      # that template, every login hitting an account switch, a logout with no
+      # session, or the device flow breaks silently. Fail here instead.
+      - name: CSP inline-script hash is in sync with oidc-provider
+        run: node scripts/check-csp-inline-hash.mjs
       - name: Upload dist
         uses: actions/upload-artifact@v4
         with:
